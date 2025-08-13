@@ -1,5 +1,5 @@
 /* Space Capture the Flag - Online Multiplayer
-	Completely reworked for online-only play with robust lobby system
+	Enhanced with AI opponents, mobile support, and move animations
 */
 
 (function(){
@@ -10,6 +10,7 @@
 	const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 	const choice = arr => arr[Math.floor(Math.random() * arr.length)];
 	const key = (x, y) => `${x},${y}`;
+	const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 	// ---------- DOM ----------
 	const $ = sel => document.querySelector(sel);
@@ -42,6 +43,7 @@
 	const createColor = $('#createColor');
 	const roomCodeEl = $('#roomCode');
 	const playersList = $('#playersList');
+	const btnAddAI = $('#btnAddAI');
 	const btnReady = $('#btnReady');
 	const btnStart = $('#btnStart');
 	const btnLeaveRoom = $('#btnLeaveRoom');
@@ -51,6 +53,7 @@
 	// ---------- Canvas ----------
 	const ctx = boardEl.getContext('2d');
 	let deviceScale = window.devicePixelRatio || 1;
+	let moveAnimations = []; // Store active move animations
 
 	function resizeCanvas() {
 		const container = boardEl.parentElement;
@@ -59,9 +62,41 @@
 		boardEl.width = Math.floor(cssWidth * deviceScale);
 		boardEl.height = Math.floor(cssHeight * deviceScale);
 		ctx.setTransform(deviceScale, 0, 0, deviceScale, 0, 0);
+		
+		// Adjust for mobile
+		if (window.innerWidth <= 768) {
+			state.mobileView = true;
+		} else {
+			state.mobileView = false;
+		}
+		
 		render();
 	}
 	window.addEventListener('resize', resizeCanvas);
+	
+	// Touch support for mobile
+	let touchStartX = 0;
+	let touchStartY = 0;
+	
+	boardEl.addEventListener('touchstart', ev => {
+		const touch = ev.touches[0];
+		touchStartX = touch.clientX;
+		touchStartY = touch.clientY;
+		ev.preventDefault();
+	}, { passive: false });
+	
+	boardEl.addEventListener('touchend', ev => {
+		const touch = ev.changedTouches[0];
+		const deltaX = Math.abs(touch.clientX - touchStartX);
+		const deltaY = Math.abs(touch.clientY - touchStartY);
+		
+		// Only register as tap if minimal movement
+		if (deltaX < 10 && deltaY < 10) {
+			const rect = boardEl.getBoundingClientRect();
+			handleBoardClick(touch.clientX - rect.left, touch.clientY - rect.top);
+		}
+		ev.preventDefault();
+	}, { passive: false });
 
 	// ---------- Game Data ----------
 	const COLOR_POOL = [
@@ -84,13 +119,18 @@
 		phase: 'awaitRoll',
 		stepsRemaining: 0,
 		highlights: new Set(),
+		lastMove: null, // Track last move for animation
 		
 		// Online state
 		roomCode: null,
 		selfId: null,
 		isHost: false,
 		inGame: false,
-		playerReady: false
+		playerReady: false,
+		mobileView: false,
+		
+		// AI state
+		aiPlayers: new Set()
 	};
 
 	// Initialize empty grid to prevent render errors
@@ -207,6 +247,14 @@
 			roomDisplay.classList.remove('hidden');
 			btnLeave.classList.remove('hidden');
 			
+			// Track AI players
+			state.aiPlayers.clear();
+			players.forEach(p => {
+				if (p.socketId && p.socketId.startsWith('AI_')) {
+					state.aiPlayers.add(p.socketId);
+				}
+			});
+			
 			// Initialize game with received players
 			const gamePlayers = players.map(p => ({
 				id: p.id,
@@ -218,7 +266,8 @@
 				base: { x: 0, y: 0 },
 				pos: { x: 0, y: 0 },
 				carryingFlagOf: null,
-				socketId: p.socketId
+				socketId: p.socketId,
+				isAI: p.socketId && p.socketId.startsWith('AI_')
 			}));
 			
 			if (state.isHost) {
@@ -290,9 +339,11 @@
 		updatePlayersList(players);
 		
 		if (state.isHost) {
+			btnAddAI.classList.remove('hidden');
 			btnStart.classList.remove('hidden');
 			btnReady.classList.add('hidden');
 		} else {
+			btnAddAI.classList.add('hidden');
 			btnStart.classList.add('hidden');
 			btnReady.classList.remove('hidden');
 		}
@@ -317,7 +368,10 @@
 			colorDiv.style.background = player.color;
 			
 			const nameSpan = document.createElement('span');
-			nameSpan.textContent = player.name + (player.id === state.selfId ? ' (You)' : '');
+			const isAI = player.isAI || (player.id && player.id.startsWith('AI_'));
+			nameSpan.textContent = player.name + 
+				(player.id === state.selfId ? ' (You)' : '') +
+				(isAI ? ' 🤖' : '');
 			
 			const statusDiv = document.createElement('div');
 			if (player.id === state.selfId && state.isHost) {
@@ -332,12 +386,18 @@
 				statusDiv.appendChild(badge);
 			}
 			
-			// Host can kick other players
+			// Host can kick other players (including AI)
 			if (state.isHost && player.id !== state.selfId) {
 				const kickBtn = document.createElement('button');
 				kickBtn.className = 'secondary small';
-				kickBtn.textContent = 'Kick';
-				kickBtn.onclick = () => socket.emit('player:kick', { playerId: player.id });
+				kickBtn.textContent = isAI ? 'Remove' : 'Kick';
+				kickBtn.onclick = () => {
+					if (isAI) {
+						socket.emit('ai:remove', { aiId: player.id });
+					} else {
+						socket.emit('player:kick', { playerId: player.id });
+					}
+				};
 				statusDiv.appendChild(kickBtn);
 			}
 			
@@ -348,6 +408,14 @@
 			
 			playersList.appendChild(li);
 		});
+		
+		// Update AI button state
+		if (state.isHost) {
+			const aiCount = players.filter(p => p.id && p.id.startsWith('AI_')).length;
+			const totalPlayers = players.length;
+			btnAddAI.disabled = totalPlayers >= 9;
+			btnAddAI.textContent = `Add AI Player (${aiCount} AI)`;
+		}
 	}
 
 	function returnToMainLobby() {
@@ -356,6 +424,7 @@
 		state.isHost = false;
 		state.playerReady = false;
 		state.inGame = false;
+		state.aiPlayers.clear();
 		
 		lobbyChoice.classList.remove('hidden');
 		roomLobby.classList.add('hidden');
@@ -367,6 +436,119 @@
 		createForm.reset();
 		joinColor.value = choice(COLOR_POOL);
 		createColor.value = choice(COLOR_POOL);
+	}
+
+	// ---------- AI Logic ----------
+	class AIPlayer {
+		static async makeMove(player, gameState) {
+			// AI decision making
+			await sleep(1000); // Simulate thinking
+			
+			const targets = AIPlayer.evaluateTargets(player, gameState);
+			if (targets.length === 0) return null;
+			
+			// Pick best target based on strategy
+			const target = targets[0];
+			return { x: target.x, y: target.y };
+		}
+		
+		static evaluateTargets(player, gameState) {
+			const reachable = computeReachable(player.pos, gameState.stepsRemaining);
+			const targets = [];
+			
+			for (const [posKey, distance] of reachable) {
+				const [x, y] = posKey.split(',').map(Number);
+				let score = 0;
+				
+				// Check for enemy flags at bases
+				for (const [ownerId, flag] of gameState.flags) {
+					if (ownerId !== player.id && flag.state === 'base' && 
+						flag.pos.x === x && flag.pos.y === y) {
+						score += 100; // High priority to capture flags
+					}
+				}
+				
+				// Check for dropped flags
+				for (const [ownerId, flag] of gameState.flags) {
+					if (flag.state === 'dropped' && 
+						flag.pos.x === x && flag.pos.y === y) {
+						score += 80; // Good to pick up dropped flags
+					}
+				}
+				
+				// If carrying a flag, prioritize returning to base
+				if (player.carryingFlagOf) {
+					const distToBase = Math.abs(x - player.base.x) + Math.abs(y - player.base.y);
+					score += (20 - distToBase) * 5;
+					
+					// Huge bonus for reaching base
+					if (x === player.base.x && y === player.base.y) {
+						score += 500;
+					}
+				}
+				
+				// Check for enemy players to tag
+				for (const enemy of gameState.players) {
+					if (enemy.id !== player.id && enemy.pos.x === x && enemy.pos.y === y) {
+						if (enemy.carryingFlagOf) {
+							score += 60; // Tag carriers
+						} else {
+							score += 20; // Tag enemies
+						}
+					}
+				}
+				
+				// Boost pads are nice
+				const tile = gameState.grid[y][x];
+				if (tile.type === TILE.BOOST) {
+					score += 10;
+				}
+				
+				// Add some randomness for variety
+				score += randInt(0, 5);
+				
+				if (score > 0) {
+					targets.push({ x, y, score, distance });
+				}
+			}
+			
+			// Sort by score (higher is better), then by distance (closer is better)
+			targets.sort((a, b) => {
+				if (b.score !== a.score) return b.score - a.score;
+				return a.distance - b.distance;
+			});
+			
+			// If no good targets, move randomly from reachable
+			if (targets.length === 0 && reachable.size > 1) {
+				const keys = Array.from(reachable.keys()).filter(k => k !== key(player.pos.x, player.pos.y));
+				if (keys.length > 0) {
+					const randomKey = choice(keys);
+					const [x, y] = randomKey.split(',').map(Number);
+					targets.push({ x, y, score: 1, distance: reachable.get(randomKey) });
+				}
+			}
+			
+			return targets;
+		}
+	}
+
+	async function handleAITurn() {
+		const cur = currentPlayer();
+		if (!cur || !cur.isAI || !state.isHost) return;
+		
+		// AI rolls
+		await sleep(800);
+		performRoll();
+		
+		// AI moves
+		await sleep(1500);
+		const move = await AIPlayer.makeMove(cur, state);
+		if (move) {
+			tryMoveTo(move.x, move.y);
+		} else {
+			// No good moves, end turn
+			nextTurn();
+		}
 	}
 
 	// ---------- Board Generation (unchanged from original) ----------
@@ -452,7 +634,7 @@
 		}
 	}
 
-	// ---------- Game Logic (unchanged from original) ----------
+	// ---------- Game Logic ----------
 	const currentPlayer = () => state.players[state.turnIndex];
 	const countActive = () => state.players.filter(p => p.active).length;
 	const playerById = id => state.players.find(p => p.id === id);
@@ -486,6 +668,12 @@
 		
 		if (state.isHost) {
 			emitGameState();
+			
+			// Check if it's an AI's turn
+			const cur = currentPlayer();
+			if (cur && cur.isAI) {
+				handleAITurn();
+			}
 		}
 	}
 
@@ -561,12 +749,21 @@
 		if (!state.highlights.has(key(x, y))) return;
 		
 		const me = currentPlayer();
+		const oldPos = { ...me.pos };
 		const distMap = computeReachable(me.pos, state.stepsRemaining);
 		const used = distMap.get(key(x, y));
 		if (used == null) return;
 		
 		state.stepsRemaining = Math.max(0, state.stepsRemaining - used);
 		me.pos = { x, y };
+		
+		// Store move for animation
+		state.lastMove = {
+			playerId: me.id,
+			from: oldPos,
+			to: { x, y },
+			path: reconstructPath(oldPos, { x, y }, distMap)
+		};
 		
 		// Handle tagging
 		for (const p of state.players) {
@@ -644,7 +841,33 @@
 		}
 	}
 
-	// ---------- Rendering (unchanged from original) ----------
+	function reconstructPath(from, to, distMap) {
+		// Simple path reconstruction for animation
+		const path = [];
+		let current = to;
+		
+		while (current.x !== from.x || current.y !== from.y) {
+			path.unshift(current);
+			
+			// Find neighbor with lower distance
+			let found = false;
+			for (const n of neighborsOf(current.x, current.y)) {
+				const dist = distMap.get(key(n.x, n.y));
+				const currentDist = distMap.get(key(current.x, current.y));
+				if (dist !== undefined && dist < currentDist) {
+					current = n;
+					found = true;
+					break;
+				}
+			}
+			
+			if (!found) break; // Safety
+		}
+		
+		return path;
+	}
+
+	// ---------- Rendering ----------
 	function render() {
 		if (!ctx) return;
 		
@@ -652,8 +875,13 @@
 		const H = boardEl.height / deviceScale;
 		ctx.clearRect(0, 0, W, H);
 		
-		const cellW = Math.floor(Math.min(W / state.cols, H / state.rows));
+		// Adjust cell size for mobile
+		let cellW = Math.floor(Math.min(W / state.cols, H / state.rows));
+		if (state.mobileView && cellW < 30) {
+			cellW = Math.max(25, cellW); // Minimum size for touch
+		}
 		state.cellSize = cellW;
+		
 		const ox = Math.floor((W - cellW * state.cols) / 2);
 		const oy = Math.floor((H - cellW * state.rows) / 2);
 		
@@ -677,6 +905,35 @@
 			ctx.moveTo(px, oy + 0.5);
 			ctx.lineTo(px, oy + cellW * state.rows - 0.5);
 			ctx.stroke();
+		}
+		
+		// Draw move trail animation
+		if (state.lastMove && state.lastMove.path) {
+			ctx.strokeStyle = 'rgba(255, 214, 68, 0.6)';
+			ctx.lineWidth = 3;
+			ctx.setLineDash([5, 5]);
+			ctx.beginPath();
+			
+			// Draw path
+			let first = true;
+			for (const point of state.lastMove.path) {
+				const px = ox + point.x * cellW + cellW / 2;
+				const py = oy + point.y * cellW + cellW / 2;
+				if (first) {
+					ctx.moveTo(px, py);
+					first = false;
+				} else {
+					ctx.lineTo(px, py);
+				}
+			}
+			ctx.stroke();
+			ctx.setLineDash([]);
+			
+			// Fade out animation
+			setTimeout(() => {
+				state.lastMove = null;
+				render();
+			}, 2000);
 		}
 		
 		// Tiles
@@ -749,6 +1006,15 @@
 			ctx.fillRect(px + 6, py + 6, cellW - 12, cellW - 12);
 			ctx.strokeRect(px + 6, py + 6, cellW - 12, cellW - 12);
 			
+			// Draw AI indicator
+			if (p.isAI) {
+				ctx.fillStyle = '#ffffff';
+				ctx.font = `${Math.floor(cellW * 0.4)}px Arial`;
+				ctx.textAlign = 'center';
+				ctx.textBaseline = 'middle';
+				ctx.fillText('🤖', px + cellW / 2, py + cellW / 2);
+			}
+			
 			if (p.carryingFlagOf != null) {
 				const victim = playerById(p.carryingFlagOf);
 				if (victim) drawFlag(px, py, cellW, victim.color, true);
@@ -787,7 +1053,8 @@
 			const p = currentPlayer();
 			if (p) {
 				const isMyTurn = p.socketId === state.selfId;
-				turnInfoEl.innerHTML = `<div><strong style="color:${p.color}">${p.name}</strong>'s turn${isMyTurn ? ' (You)' : ''}</div>`;
+				const aiIndicator = p.isAI ? ' 🤖' : '';
+				turnInfoEl.innerHTML = `<div><strong style="color:${p.color}">${p.name}${aiIndicator}</strong>'s turn${isMyTurn ? ' (You)' : ''}</div>`;
 			}
 		}
 		
@@ -808,7 +1075,9 @@
 			sw.style.background = p.color;
 			
 			const name = document.createElement('span');
-			name.textContent = p.name + (p.socketId === state.selfId ? ' (You)' : '');
+			name.textContent = p.name + 
+				(p.socketId === state.selfId ? ' (You)' : '') +
+				(p.isAI ? ' 🤖' : '');
 			
 			const sc = document.createElement('strong');
 			sc.textContent = p.active ? `${p.flagsLeft} flags` : 'OUT';
@@ -836,6 +1105,7 @@
 		state.stepsRemaining = 0;
 		state.highlights.clear();
 		state.flags = new Map();
+		state.lastMove = null;
 		
 		const n = players.length;
 		generateBoard(n);
@@ -845,6 +1115,12 @@
 		
 		if (state.isHost) {
 			emitGameState();
+			
+			// Check if first player is AI
+			const cur = currentPlayer();
+			if (cur && cur.isAI) {
+				handleAITurn();
+			}
 		}
 	}
 
@@ -870,6 +1146,19 @@
 		
 		if (state.isHost) {
 			emitGameState();
+			
+			// If AI, continue with move
+			const cur = currentPlayer();
+			if (cur && cur.isAI) {
+				setTimeout(async () => {
+					const move = await AIPlayer.makeMove(cur, state);
+					if (move) {
+						tryMoveTo(move.x, move.y);
+					} else {
+						nextTurn();
+					}
+				}, 1500);
+			}
 		}
 	}
 
@@ -890,7 +1179,8 @@
 			flags: Array.from(state.flags.entries()),
 			turnIndex: state.turnIndex,
 			phase: state.phase,
-			stepsRemaining: state.stepsRemaining
+			stepsRemaining: state.stepsRemaining,
+			lastMove: state.lastMove
 		};
 	}
 
@@ -904,7 +1194,16 @@
 		state.turnIndex = remote.turnIndex;
 		state.phase = remote.phase;
 		state.stepsRemaining = remote.stepsRemaining;
+		state.lastMove = remote.lastMove;
 		state.highlights.clear();
+		
+		// Track AI players
+		state.aiPlayers.clear();
+		state.players.forEach(p => {
+			if (p.isAI || (p.socketId && p.socketId.startsWith('AI_'))) {
+				state.aiPlayers.add(p.socketId);
+			}
+		});
 		
 		// Re-highlight if it's our turn and we're in move phase
 		if (state.phase === 'awaitMove') {
@@ -919,6 +1218,29 @@
 	}
 
 	// ---------- Event Handlers ----------
+	function handleBoardClick(clickX, clickY) {
+		if (!state.inGame || state.phase !== 'awaitMove') return;
+		
+		const cur = currentPlayer();
+		if (!cur || cur.socketId !== state.selfId) return;
+		
+		const W = boardEl.width / deviceScale;
+		const H = boardEl.height / deviceScale;
+		const cellW = state.cellSize;
+		const ox = Math.floor((W - cellW * state.cols) / 2);
+		const oy = Math.floor((H - cellW * state.rows) / 2);
+		const x = Math.floor((clickX - ox) / cellW);
+		const y = Math.floor((clickY - oy) / cellW);
+		
+		if (!inBounds(x, y)) return;
+		
+		if (state.isHost) {
+			tryMoveTo(x, y);
+		} else {
+			socket.emit('action:move', { x, y });
+		}
+	}
+
 	rollBtn.addEventListener('click', () => {
 		if (state.phase !== 'awaitRoll') return;
 		
@@ -946,27 +1268,8 @@
 	});
 
 	boardEl.addEventListener('click', ev => {
-		if (!state.inGame || state.phase !== 'awaitMove') return;
-		
-		const cur = currentPlayer();
-		if (!cur || cur.socketId !== state.selfId) return;
-		
 		const rect = boardEl.getBoundingClientRect();
-		const W = boardEl.width / deviceScale;
-		const H = boardEl.height / deviceScale;
-		const cellW = Math.floor(Math.min(W / state.cols, H / state.rows));
-		const ox = Math.floor((W - cellW * state.cols) / 2);
-		const oy = Math.floor((H - cellW * state.rows) / 2);
-		const x = Math.floor((ev.clientX - rect.left - ox) / cellW);
-		const y = Math.floor((ev.clientY - rect.top - oy) / cellW);
-		
-		if (!inBounds(x, y)) return;
-		
-		if (state.isHost) {
-			tryMoveTo(x, y);
-		} else {
-			socket.emit('action:move', { x, y });
-		}
+		handleBoardClick(ev.clientX - rect.left, ev.clientY - rect.top);
 	});
 
 	// Lobby form handlers
@@ -989,6 +1292,11 @@
 		if (!name) return;
 		
 		socket.emit('room:create', { name, color });
+	});
+
+	btnAddAI.addEventListener('click', () => {
+		if (!state.isHost) return;
+		socket.emit('ai:add');
 	});
 
 	btnReady.addEventListener('click', () => {
@@ -1024,11 +1332,12 @@
 		<div class="rules-copy">
 			<p><strong>Goal</strong>: Capture opponents' flags. Each player starts with <strong>3 flags</strong>. You're eliminated when all of your flags have been captured. Last player with flags remaining wins.</p>
 			<ul>
-				<li><strong>Players</strong>: 3–9 players online.</li>
+				<li><strong>Players</strong>: 3–9 players online (can add AI opponents).</li>
 				<li><strong>Board</strong>: Bases on the rim, asteroids (blocked), boost pads (+2 on landing), paired wormholes (teleport on landing).</li>
 				<li><strong>Turn</strong>: Roll 1–6; move orthogonally. You can't move through asteroids or other players.</li>
 				<li><strong>Tagging</strong>: Finish on a tile with another player to tag them back to base. If they carry a flag, it drops.</li>
 				<li><strong>Flags</strong>: Step onto an opponent's base to take one of their remaining flags. If you reach your base while carrying, that opponent loses one flag. Their next flag respawns at their base until they're out.</li>
+				<li><strong>AI Players</strong>: The host can add AI opponents that play strategically. They're marked with 🤖.</li>
 			</ul>
 		</div>
 	`;
@@ -1053,18 +1362,5 @@
 	
 	// Connect to server
 	connectSocket();
-	
-	// Update TODO status
-	const _nextTurn = nextTurn;
-	nextTurn = function() {
-		_nextTurn();
-		if (state.isHost) emitGameState();
-	};
-	
-	const _tryMoveTo = tryMoveTo;
-	tryMoveTo = function(x, y) {
-		_tryMoveTo(x, y);
-		if (state.isHost) emitGameState();
-	};
 
 })();

@@ -28,17 +28,19 @@ class Room {
 		this.maxPlayers = 9;
 		this.createdAt = Date.now();
 		this.lastActivity = Date.now();
+		this.aiCount = 0;
 	}
 
 	addPlayer(socketId, playerData) {
 		if (this.players.size >= this.maxPlayers) return false;
-		if (!this.hostId) this.hostId = socketId;
+		if (!this.hostId && !playerData.isAI) this.hostId = socketId;
 		this.players.set(socketId, {
 			id: socketId,
 			name: playerData.name,
 			color: playerData.color,
-			ready: false,
-			connected: true
+			ready: playerData.isAI || false,
+			connected: true,
+			isAI: playerData.isAI || false
 		});
 		this.lastActivity = Date.now();
 		return true;
@@ -63,7 +65,7 @@ class Room {
 	canStart() {
 		if (this.players.size < 3) return false;
 		for (const player of this.players.values()) {
-			if (!player.ready && player.id !== this.hostId) return false;
+			if (!player.ready && player.id !== this.hostId && !player.isAI) return false;
 		}
 		return true;
 	}
@@ -286,6 +288,86 @@ io.on('connection', (socket) => {
 		});
 	});
 
+	// Add AI player
+	socket.on('ai:add', () => {
+		const roomCode = socketToRoom.get(socket.id);
+		if (!roomCode) return;
+		
+		const room = rooms.get(roomCode);
+		if (!room || room.hostId !== socket.id) return;
+		
+		if (room.players.size >= room.maxPlayers) {
+			socket.emit('room:error', { message: 'Room is full' });
+			return;
+		}
+		
+		if (room.gameStarted) {
+			socket.emit('room:error', { message: 'Cannot add AI during game' });
+			return;
+		}
+		
+		room.aiCount++;
+		const aiId = `AI_${roomCode}_${room.aiCount}`;
+		const aiNames = ['HAL', 'GLaDOS', 'JARVIS', 'Cortana', 'EDI', 'TARS', 'Friday', 'Vision', 'Ultron'];
+		const aiColors = ['#ff5757', '#3aa3ff', '#49d46c', '#b67eff', '#ff9f40', '#ffd644', '#28e0e0', '#ff7ab6', '#18c09a'];
+		
+		// Pick unused name and color
+		const usedNames = Array.from(room.players.values()).map(p => p.name);
+		const usedColors = Array.from(room.players.values()).map(p => p.color);
+		const availableNames = aiNames.filter(n => !usedNames.includes(n));
+		const availableColors = aiColors.filter(c => !usedColors.includes(c));
+		
+		const aiPlayer = {
+			name: availableNames[0] || `AI ${room.aiCount}`,
+			color: availableColors[0] || '#808080',
+			isAI: true
+		};
+		
+		room.addPlayer(aiId, aiPlayer);
+		
+		io.to(roomCode).emit('room:playerUpdate', {
+			players: room.getPlayersArray(),
+			canStart: room.canStart()
+		});
+		
+		console.log(`AI player ${aiPlayer.name} added to room ${roomCode}`);
+	});
+	
+	// Remove AI player
+	socket.on('ai:remove', ({ aiId }) => {
+		const roomCode = socketToRoom.get(socket.id);
+		if (!roomCode) return;
+		
+		const room = rooms.get(roomCode);
+		if (!room || room.hostId !== socket.id) return;
+		
+		if (room.players.has(aiId)) {
+			room.removePlayer(aiId);
+			io.to(roomCode).emit('room:playerUpdate', {
+				players: room.getPlayersArray(),
+				canStart: room.canStart()
+			});
+		}
+	});
+	
+	// AI makes a move (host calculates and sends)
+	socket.on('ai:move', ({ aiId, action, data }) => {
+		const roomCode = socketToRoom.get(socket.id);
+		if (!roomCode) return;
+		
+		const room = rooms.get(roomCode);
+		if (!room || room.hostId !== socket.id) return;
+		
+		// Broadcast AI action to all players
+		if (action === 'roll') {
+			io.to(roomCode).emit('action:roll', { fromId: aiId });
+		} else if (action === 'move') {
+			io.to(roomCode).emit('action:move', { fromId: aiId, x: data.x, y: data.y });
+		} else if (action === 'end') {
+			io.to(roomCode).emit('action:end', { fromId: aiId });
+		}
+	});
+	
 	// Handle disconnection
 	socket.on('disconnect', () => {
 		const roomCode = socketToRoom.get(socket.id);
