@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width, initial-scale=1" />
+	<meta name="theme-color" content="#0b0e13" />
+	<title>Space Capture the Flag - Online</title>
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet">
+	<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&display=swap" rel="stylesheet">
+	<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+	<div id="app">
+		<header class="topbar">
+			<div class="brand">🚩 Space Capture the Flag</div>
+			<div class="top-actions">
+				<span id="roomDisplay" class="room-code hidden"></span>
+				<button id="btnHow" class="secondary">How to Play</button>
+				<button id="btnLeave" class="secondary hidden">Leave Game</button>
+			</div>
+		</header>
+		<main class="layout">
+			<section class="board-panel">
+				<canvas id="board" aria-label="Game board" role="img"></canvas>
+			</section>
+			<aside class="hud">
+				<div class="panel">
+					<h3>Turn</h3>
+					<div id="turnInfo"></div>
+					<div class="controls">
+						<button id="btnRoll" class="primary">Roll</button>
+						<span id="rollResult" class="die">-</span>
+						<button id="btnEnd" class="secondary">End Turn</button>
+					</div>
+				</div>
+				<div class="panel">
+					<h3>Score</h3>
+					<ul id="scoreboard" class="scoreboard"></ul>
+				</div>
+				<div class="panel small">
+					<h3>Legend</h3>
+					<ul class="legend">
+						<li><span class="legend-swatch swatch-asteroid"></span> Asteroid (blocked)</li>
+						<li><span class="legend-swatch swatch-boost"></span> Boost pad (+2)</li>
+						<li><span class="legend-swatch swatch-portal"></span> Wormhole (teleport)</li>
+						<li><span class="legend-swatch swatch-flag"></span> Flag</li>
+						<li><span class="legend-swatch swatch-highlight"></span> Reachable</li>
+					</ul>
+				</div>
+			</aside>
+		</main>
+	</div>
+
+	<!-- Main Lobby Modal -->
+	<div id="lobbyModal" class="modal">
+		<div class="modal-content lobby-content">
+			<h2>Join or Create Room</h2>
+			
+			<!-- Initial choice -->
+			<div id="lobbyChoice" class="lobby-choice">
+				<form id="joinForm" class="lobby-form">
+					<h3>Join Existing Room</h3>
+					<input type="text" id="joinCode" placeholder="Room Code (e.g., ABC1)" maxlength="4" required />
+					<input type="text" id="joinName" placeholder="Your Name" required />
+					<input type="color" id="joinColor" value="#3aa3ff" />
+					<button type="submit" class="primary">Join Room</button>
+				</form>
+				
+				<div class="divider">OR</div>
+				
+				<form id="createForm" class="lobby-form">
+					<h3>Create New Room</h3>
+					<input type="text" id="createName" placeholder="Your Name" required />
+					<input type="color" id="createColor" value="#ff5757" />
+					<button type="submit" class="primary">Create Room</button>
+				</form>
+			</div>
+
+			<!-- Room lobby -->
+			<div id="roomLobby" class="room-lobby hidden">
+				<div class="room-header">
+					<h3>Room Code: <span id="roomCode" class="room-code-display"></span></h3>
+					<p class="muted">Share this code with friends to join</p>
+				</div>
+				
+				<div class="players-list">
+					<h4>Players (3-9 required)</h4>
+					<ul id="playersList" class="lobby-players"></ul>
+				</div>
+				
+				<div id="lobbyActions" class="lobby-actions">
+					<button id="btnReady" class="secondary">Ready</button>
+					<button id="btnStart" class="primary hidden">Start Game</button>
+					<button id="btnLeaveRoom" class="secondary">Leave Room</button>
+				</div>
+				
+				<p id="lobbyStatus" class="lobby-status"></p>
+			</div>
+
+			<div id="errorMessage" class="error-message hidden"></div>
+		</div>
+	</div>
+
+	<!-- Rules Modal -->
+	<div id="rulesModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="rulesTitle">
+		<div class="modal-content rules">
+			<h2 id="rulesTitle">How to Play</h2>
+			<div id="rulesBody"></div>
+			<div class="modal-actions">
+				<button id="btnCloseRules" class="primary">Close</button>
+			</div>
+		</div>
+	</div>
+
+	<script src="/socket.io/socket.io.js"></script>
+	<script src="game.js"></script>
+</body>
+</html>
