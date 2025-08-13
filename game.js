@@ -442,10 +442,26 @@
 	class AIPlayer {
 		static async makeMove(player, gameState) {
 			// AI decision making
-			await sleep(1000); // Simulate thinking
+			await sleep(500); // Simulate thinking
 			
 			const targets = AIPlayer.evaluateTargets(player, gameState);
-			if (targets.length === 0) return null;
+			if (targets.length === 0) {
+				// If no strategic targets, just move somewhere valid
+				const reachable = computeReachable(player.pos, gameState.stepsRemaining);
+				const moves = Array.from(reachable.entries())
+					.filter(([k, d]) => k !== key(player.pos.x, player.pos.y))
+					.map(([k, d]) => {
+						const [x, y] = k.split(',').map(Number);
+						return { x, y, distance: d };
+					});
+				
+				if (moves.length > 0) {
+					// Pick a random valid move
+					const move = choice(moves);
+					return { x: move.x, y: move.y };
+				}
+				return null;
+			}
 			
 			// Pick best target based on strategy
 			const target = targets[0];
@@ -536,18 +552,26 @@
 		const cur = currentPlayer();
 		if (!cur || !cur.isAI || !state.isHost) return;
 		
-		// AI rolls
-		await sleep(800);
-		performRoll();
-		
-		// AI moves
-		await sleep(1500);
-		const move = await AIPlayer.makeMove(cur, state);
-		if (move) {
-			tryMoveTo(move.x, move.y);
-		} else {
-			// No good moves, end turn
-			nextTurn();
+		if (state.phase === 'awaitRoll') {
+			// AI rolls
+			await sleep(800);
+			performRoll();
+		} else if (state.phase === 'awaitMove') {
+			// AI continues moving or ends turn
+			await sleep(1200);
+			
+			if (state.stepsRemaining > 0) {
+				const move = await AIPlayer.makeMove(cur, state);
+				if (move) {
+					tryMoveTo(move.x, move.y);
+				} else {
+					// No good moves, end turn
+					nextTurn();
+				}
+			} else {
+				// No steps left, shouldn't happen but safety check
+				nextTurn();
+			}
 		}
 	}
 
@@ -824,6 +848,11 @@
 			if (state.stepsRemaining > 0) {
 				state.phase = 'awaitMove';
 				highlightReachable();
+				
+				// If AI still has moves, continue
+				if (state.isHost && me.isAI) {
+					setTimeout(() => handleAITurn(), 1000);
+				}
 			} else {
 				state.phase = 'awaitRoll';
 				state.highlights.clear();
@@ -1138,28 +1167,22 @@
 			rollResultEl.classList.remove('bump');
 			void rollResultEl.offsetWidth;
 			rollResultEl.classList.add('bump');
-		}, 650);
-		
-		state.stepsRemaining = roll;
-		state.phase = 'awaitMove';
-		highlightReachable();
-		
-		if (state.isHost) {
-			emitGameState();
 			
-			// If AI, continue with move
-			const cur = currentPlayer();
-			if (cur && cur.isAI) {
-				setTimeout(async () => {
-					const move = await AIPlayer.makeMove(cur, state);
-					if (move) {
-						tryMoveTo(move.x, move.y);
-					} else {
-						nextTurn();
-					}
-				}, 1500);
+			// Set state after animation completes
+			state.stepsRemaining = roll;
+			state.phase = 'awaitMove';
+			highlightReachable();
+			
+			if (state.isHost) {
+				emitGameState();
+				
+				// If AI, make first move
+				const cur = currentPlayer();
+				if (cur && cur.isAI) {
+					setTimeout(() => handleAITurn(), 800);
+				}
 			}
-		}
+		}, 650);
 	}
 
 	// ---------- Network Sync ----------
